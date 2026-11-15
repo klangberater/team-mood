@@ -80,9 +80,24 @@ export const register: Register = on => {
     const opened = await $.ui.open({ id: PANE, title: TITLE, rows: ROWS, focus: true })
     wantEverything()
     later($, () => tick($))
+    if (opened.isPlaced) return { text: 'Team Mood is open.' }
+
+    // No panel here: say why, and give the moods as text so they are seen anyway.
+    const b = await read($, board)
+    const cards = (b?.cards ?? []).map(c => {
+      const trend = TREND[c.trend] ? ` (${TREND[c.trend]})` : ''
+      const items = c.items
+        .slice(0, 5)
+        .map(i => `\n    - ${i.number !== undefined ? `#${i.number} ` : ''}${i.title}`)
+        .join('')
+
+      return `${c.emoji} ${c.name}: ${FACES[c.mood]} ${MOOD_WORD[c.mood]}${trend}\n  ${c.status}${items}`
+    })
 
     return {
-      text: opened.isPlaced ? 'Team Mood is open.' : 'Team Mood will show when there is room.',
+      text:
+        `The Team Mood panel can't be shown here (${opened.reason}).\n\n` +
+        (cards.length > 0 ? cards.join('\n\n') : 'Still asking the team; run /team-mood again in a moment.'),
     }
   })
 

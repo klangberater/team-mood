@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, UiOpenResult } from 'claude-code'
 
 const ISSUES = [
   {
@@ -35,11 +35,11 @@ const PANE = {
 } as const
 
 /** The engine beneath the plugin: gh answers ISSUES, no config file, no model. */
-function world(on: On, submitted: string[]) {
+function world(on: On, submitted: string[], placed: UiOpenResult = { isPlaced: true }) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on, { 'latest:/repo': { security: 0, qa: 2, performance: 0 } })
   on('command.register', () => ({ value: { command: 'team-mood' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => ({ value: placed }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
@@ -137,4 +137,20 @@ test('the guard puts a CI edit to the person, and lets ordinary edits through', 
     input: { file_path: '/repo/src/app.py', old_string: 'x = 1', new_string: 'x = 2' },
   })
   expect(fine.decision).toBe('allow')
+})
+
+test('where no panel can be placed, /team-mood says why and gives the moods as text', async ($, on) => {
+  const clock = world(on, [], { isPlaced: false, reason: 'no-surface: nothing is attached' })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  await clock.advance(1000)
+
+  const ran = await $.command.run({
+    command: 'team-mood',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(ran.text).toContain("can't be shown here (no-surface: nothing is attached)")
+  expect(ran.text).toContain('🛡️ Security Engineer: 😐 Okay')
+  expect(ran.text).toContain('#42 Security: login page reveals which emails have accounts')
 })
