@@ -1,0 +1,13 @@
+{
+  "name": "team-mood",
+  "description": "Team Mood: personas whose moods show how healthy your app is.",
+  "owner": {
+    "name": "klangberater"
+  },
+  "plugins": [
+    {
+      "name": "team-mood",
+      "source": "./"
+    }
+  ]
+}

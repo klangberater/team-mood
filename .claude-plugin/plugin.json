@@ -1,0 +1,9 @@
+{
+  "name": "team-mood",
+  "version": "0.1.0",
+  "description": "A panel of personas (Security, QA, Performance) whose moods show how healthy your app is, in plain language.",
+  "author": { "name": "klangberater" },
+  "homepage": "https://github.com/klangberater/team-mood",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
