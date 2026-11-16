@@ -35,8 +35,23 @@ In the desktop app: click **+** next to the prompt box → **Plugins** → **Add
 The panel opens by itself in a wide terminal (144+ columns) or the desktop app. Anywhere else,
 type `/team-mood`. A short mood summary also sits in the status line.
 
-Where no panel can be drawn at all (a remote session viewed from the desktop app or phone, or a
-headless run), `/team-mood` answers in text instead: each persona's mood and findings in plain
+### Remote mode: the live page
+
+A session viewed from the desktop app or a phone in remote mode draws no mod panels. For that,
+Team Mood also serves the team as a **live web page** from the machine the session runs on
+(`http://127.0.0.1:4873`, another port if that one is taken). In remote mode the mod tells the app
+about it, so the app can show the page in its **preview pane** beside the chat. The page
+updates every few seconds and its **Fix this**, **Get a check-up** and **Refresh** buttons work:
+a press reaches the session within seconds and is sent to Claude as the panel's would be.
+
+The page needs `python3` (macOS and Linux have it). Its server is a short standard-library
+script (`web/serve.py`) that stops by itself two minutes after the session ends. It listens on
+this machine only. Pressing buttons needs a token that only the page itself carries, so other
+websites can't press them. To open it from other devices, set `"dashboard": { "host": "0.0.0.0" }`
+(or your Tailscale address), but only on a network you trust: anyone who can load the page can
+press its buttons. `"dashboard": { "enabled": false }` turns it off.
+
+Where neither a panel nor the page is at hand, `/team-mood` answers in text instead: each persona's mood and findings in plain
 words, with typed commands for the buttons:
 
 - `/team-mood fix 42` (an issue number, or a check's name like `secret-scan`) does what
@@ -100,9 +115,30 @@ Put it at the repository root. Everything is optional, and personas merge with t
 ```
 
 Persona fields: `id`, `name`, `emoji`, `focus` (what it looks for, the persona's brief), `tone`,
-`labels`, `titlePatterns` (case-insensitive regexes), `authors`, `checks`, `lines` (fallback
+`labels`, `titlePatterns` (case-insensitive regexes), `authors`, `match`, `checks`, `lines` (fallback
 sentences per mood: `{n}` is the count in words, `{s}` a plural "s", `{v}` a verb's "s"),
 `thresholds`, `enabled`.
+
+`labels`, `titlePatterns` and `authors` each let an issue in on their own. `match` is for stricter
+cases: a list of rules, each with any of `labels`, `notLabels`, `titlePatterns`, `authors` and
+`bodyPatterns`, where everything a rule names must hold. That splits a combined report between
+personas by what its body says:
+
+```json
+{
+  "id": "performance",
+  "labels": [],
+  "titlePatterns": [],
+  "match": [
+    { "labels": ["performance"], "notLabels": ["weekly-report"] },
+    { "titlePatterns": ["Nightly Audit"], "bodyPatterns": ["Category:\\*\\* (database|memory)"] }
+  ]
+}
+```
+
+A persona's own `labels`/`titlePatterns` replace the defaults, so set them to `[]` when only
+`match` rules should count. Body rules make Team Mood fetch issue bodies, which is slower on
+repos with many long issues.
 
 A check's `run` is a shell line, an argv list, or `builtin:secrets`. Exit 0 passes. Exit
 126/127 (tool not installed) counts as skipped, not failed.

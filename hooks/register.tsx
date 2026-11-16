@@ -3,9 +3,10 @@ import type { Register } from 'claude-code'
 
 import type { Mood, MoodItem, PersonaCard, Trend } from '../types'
 
-import { checkupPrompt, fixPrompt } from './prompts'
+import { checkupPrompt, fixPrompt, handleOf } from './prompts'
 import { FACES } from './score'
 import {
+  dashboardUrl,
   explain,
   guardReason,
   later,
@@ -13,6 +14,7 @@ import {
   loadConfig,
   persona,
   plainKey,
+  pushState,
   S,
   tick,
   wantEverything,
@@ -52,17 +54,6 @@ const TREND: Record<Trend, string> = {
 }
 
 const HELP = 'Try /team-mood to see the list, /team-mood fix <issue>, or /team-mood checkup <persona>.'
-
-/** What `/team-mood fix` takes for an item: the issue number, or the check's name as a slug. */
-function handleOf(item: MoodItem): string {
-  if (item.number !== undefined) return String(item.number)
-
-  return item.title
-    .replace(/^Local check failing: /, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-}
 
 function label(item: MoodItem): string {
   return item.number !== undefined ? `issue #${item.number}` : `"${item.title}"`
@@ -152,11 +143,12 @@ export const register: Register = on => {
       )
     })
 
-    return {
-      text:
-        `${blocks.join('\n\n')}\n\n` +
-        `(The panel can't be shown here: ${opened.reason}. These commands do what its buttons do.)`,
-    }
+    const url = dashboardUrl()
+    const page = url
+      ? `The live page, with buttons: ${url} (in remote mode, also in the app's preview pane).`
+      : `(The panel can't be shown here: ${opened.reason}. These commands do what its buttons do.)`
+
+    return { text: `${blocks.join('\n\n')}\n\n${page}` }
   })
 
   on('turn.complete', ($, e, next) => {
@@ -172,10 +164,13 @@ export const register: Register = on => {
     const reason = await guardReason($, String(tool), input)
     if (reason !== undefined) {
       await update($, alert, () => reason)
+      await pushState($)
       $.ui.toast(reason, { timeoutMs: 20_000 })
     }
-    const ran = await next(e).finally(() => {
-      if (reason !== undefined) void update($, alert, () => null)
+    const ran = await next(e).finally(async () => {
+      if (reason === undefined) return
+      await update($, alert, () => null)
+      await pushState($)
     })
     if (ran.deny === undefined && ran.isError !== true && ran.isReadOnly !== true) {
       S.lastEdit = await $.clock.now()

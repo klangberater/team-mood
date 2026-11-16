@@ -46,3 +46,14 @@ export function checkupPrompt(p: PersonaConfig): string {
     'which ones to fix.'
   )
 }
+
+/** What `/team-mood fix` and the page take for an item: the issue number, or the check's name as a slug. */
+export function handleOf(item: MoodItem): string {
+  if (item.number !== undefined) return String(item.number)
+
+  return item.title
+    .replace(/^Local check failing: /, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+}

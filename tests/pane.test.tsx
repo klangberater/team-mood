@@ -35,7 +35,9 @@ const PANE = {
 } as const
 
 /** The engine beneath the plugin: gh answers ISSUES, no config file, no model. */
-function world(on: On, submitted: string[], placed: UiOpenResult = { isPlaced: true }) {
+type World = { placed?: UiOpenResult; files?: Record<string, string>; env?: Record<string, string> }
+
+function world(on: On, submitted: string[], { placed = { isPlaced: true }, files = {}, env = {} }: World = {}) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on, { 'latest:/repo': { security: 0, qa: 2, performance: 0 } })
   on('command.register', () => ({ value: { command: 'team-mood' } }))
@@ -43,7 +45,8 @@ function world(on: On, submitted: string[], placed: UiOpenResult = { isPlaced: t
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
-  on('fs.read', () => ({ deny: 'ENOENT: no such file' }))
+  mock.env(on, env)
+  on('fs.read', (_, e) => (e.path in files ? { value: files[e.path] as string } : { deny: 'ENOENT: no such file' }))
   on('fs.stat', () => ({ deny: 'ENOENT: no such file' }))
   on('model.complete', () => ({
     value: {
@@ -143,7 +146,7 @@ const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: false,
 
 test('where no panel can be placed, /team-mood answers in text with typed actions', async ($, on) => {
   const submitted: string[] = []
-  const clock = world(on, submitted, { isPlaced: false, reason: 'no-surface: nothing is attached' })
+  const clock = world(on, submitted, { placed: { isPlaced: false, reason: 'no-surface: nothing is attached' } })
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
   await clock.advance(1000)
 
@@ -164,4 +167,45 @@ test('where no panel can be placed, /team-mood answers in text with typed action
 
   const unknown = await $.command.run({ command: 'team-mood', args: 'fix 999', ...RUN })
   expect(unknown.text).toContain('Nothing on the team')
+})
+
+test('the page: the mod starts it, posts the team to it, and sends its presses to Claude', async ($, on) => {
+  const submitted: string[] = []
+  const info = '/home/me/.team-mood/-repo/server.json'
+  const clock = world(on, submitted, {
+    env: { HOME: '/home/me' },
+    files: { [info]: JSON.stringify({ port: 4873, token: 'mod-token' }) },
+  })
+  const posted: string[] = []
+  let presses = [{ kind: 'fix', target: '42' }]
+  on('http.fetch', (_, e) => {
+    const ok = (text: string) => ({ value: { status: 200, ok: true, headers: {}, text } })
+    if (e.url.endsWith('/state') && e.init?.method === 'POST') {
+      expect(e.init.headers?.['X-Team-Mood-Token']).toBe('mod-token')
+      posted.push(String(e.init.body))
+      return ok('')
+    }
+    if (e.url.endsWith('/actions')) {
+      const taken = presses
+      presses = []
+      return ok(JSON.stringify(taken))
+    }
+    return ok('{}')
+  })
+  const reported: unknown[] = []
+  on('tool.call', (_, e) => {
+    reported.push(e)
+    return { result: {} }
+  })
+
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  await clock.advance(6000)
+  await clock.advance(6000)
+
+  const last = JSON.parse(posted.at(-1) ?? '{}')
+  expect(last.board.cards[0].items[0].handle).toBe('42')
+  expect(submitted[0]).toContain('The Security Engineer is unhappy about issue #42')
+  expect(reported).toContainEqual(
+    expect.objectContaining({ tool: 'mcp__claude-code-remote__report_preview_port', port: 4873 }),
+  )
 })

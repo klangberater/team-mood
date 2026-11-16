@@ -9,7 +9,7 @@ import {
   globToRegExp,
   protectedBy,
 } from '../hooks/guard'
-import { buildBoard, fallbackLine, moodFor } from '../hooks/score'
+import { belongsTo, buildBoard, fallbackLine, moodFor } from '../hooks/score'
 import type { GhIssue } from '../hooks/score'
 
 const issue = (number: number, title: string, labels: string[] = []): GhIssue => ({
@@ -109,4 +109,28 @@ test('the guard spots suppressions an edit adds, not ones already there', async 
   expect(addedSuppressions('a() // eslint-disable-line', 'b() // eslint-disable-line')).toEqual([])
   expect(addedSuppressions('', "it.skip('works', () => {})")).toEqual(['skipped test'])
   expect(addedSuppressions('', '@pytest.mark.skip\ndef test_x(): ...')).toEqual(['skipped test'])
+})
+
+test('a match rule needs all its parts, so a combined report counts only where its findings are', async () => {
+  const config = mergeConfig({
+    personas: [
+      {
+        id: 'security',
+        match: [{ titlePatterns: ['Security & Performance Audit'], bodyPatterns: ['Category:\\*\\* security'] }],
+      },
+      {
+        id: 'performance',
+        titlePatterns: [],
+        match: [{ titlePatterns: ['Security & Performance Audit'], bodyPatterns: ['Category:\\*\\* database'] }],
+      },
+    ],
+  })
+  const audit = {
+    ...issue(9, 'Nightly Security & Performance Audit'),
+    body: '### [MEDIUM] N+1 query\n**Category:** database',
+  }
+  const [security, , performance] = config.personas
+  expect(belongsTo(security!, audit)).toBe(false)
+  expect(belongsTo(performance!, audit)).toBe(true)
+  expect(belongsTo(performance!, { ...audit, body: undefined })).toBe(false)
 })

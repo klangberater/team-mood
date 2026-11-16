@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team Mood</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --text: #1d1c1a; --muted: #6b6861; --line: #e3e0d9;
+    --happy: #2f855a; --neutral: #8a8478; --worried: #c27c0e; --alarmed: #c53030;
+    --accent: #3b5bdb; --accent-text: #ffffff; --shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --card: #201f1c; --text: #ecebe7; --muted: #a39f95; --line: #34322d;
+      --happy: #5fc28a; --neutral: #a39f95; --worried: #e3a23b; --alarmed: #f06b6b;
+      --accent: #7d95f5; --accent-text: #0f1424; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .meta { color: var(--muted); font-size: 13px; flex: 1; }
+  .grid { display: grid; gap: 14px; align-items: start; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-top: 4px solid var(--mood);
+    border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  }
+  .who { display: flex; align-items: center; gap: 10px; }
+  .avatar { font-size: 30px; line-height: 1; }
+  .name { font-weight: 600; }
+  .mood { color: var(--mood); font-weight: 600; font-size: 14px; }
+  .trend { color: var(--muted); font-weight: 400; }
+  .status { font-size: 15px; }
+  button {
+    font: inherit; font-size: 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--text); padding: 6px 12px;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.link { border: 0; padding: 4px 0; color: var(--accent); text-align: left; }
+  .items { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .item { display: flex; flex-direction: column; gap: 6px; }
+  .item-title { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .item-text { font-size: 14px; }
+  .item-text.pending { color: var(--muted); font-style: italic; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  a { color: var(--accent); font-size: 14px; }
+  .error { background: var(--card); border: 1px solid var(--worried); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; }
+  .toast {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: calc(100% - 32px);
+    background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px;
+    opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Team Mood</h1>
+    <span class="meta" id="meta">Asking the team how they feel…</span>
+    <button id="refresh" type="button">↻ Refresh</button>
+  </header>
+  <div id="error"></div>
+  <div class="grid" id="grid"></div>
+</main>
+<div class="toast" id="toast" role="status"></div>
+<script>
+(() => {
+  const TOKEN = '__TEAM_MOOD_TOKEN__'
+  const FACES = { happy: '😊', neutral: '😐', worried: '😟', alarmed: '😱' }
+  const WORDS = { happy: 'Happy', neutral: 'Okay', worried: 'Worried', alarmed: 'Alarmed' }
+  const TRENDS = {
+    better: '↗ better than last session', worse: '↘ worse than last session',
+    same: 'same as last session', new: '',
+  }
+  const open = new Set()
+  let last = ''
+  let current = null
+
+  const el = (tag, props = {}, ...kids) => {
+    const node = document.createElement(tag)
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') node.className = v
+      else if (k === 'text') node.textContent = v
+      else if (k.startsWith('on')) node.addEventListener(k.slice(2), v)
+      else node.setAttribute(k, v)
+    }
+    for (const kid of kids) if (kid) node.append(kid)
+    return node
+  }
+
+  const toast = text => {
+    const t = document.getElementById('toast')
+    t.textContent = text
+    t.classList.add('show')
+    clearTimeout(toast.timer)
+    toast.timer = setTimeout(() => t.classList.remove('show'), 3500)
+  }
+
+  const act = async (kind, target, what) => {
+    try {
+      const r = await fetch('action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Team-Mood-Token': TOKEN },
+        body: JSON.stringify({ kind, target }),
+      })
+      if (!r.ok) throw new Error(String(r.status))
+      toast(kind === 'refresh' ? 'Asking the team again…' : `Sent to Claude: ${what}. It starts as soon as it's free.`)
+    } catch {
+      toast('Claude Code is not reachable. Is the session still open?')
+    }
+  }
+
+  const ago = ms => {
+    const min = Math.floor(ms / 60000)
+    return min < 1 ? 'just now' : min < 60 ? `${min} min ago` : `${Math.floor(min / 60)} h ago`
+  }
+
+  const card = c => {
+    const isOpen = open.has(c.id)
+    const node = el('section', { class: 'card' })
+    node.style.setProperty('--mood', `var(--${c.mood})`)
+    const trend = TRENDS[c.trend]
+    node.append(
+      el('div', { class: 'who' },
+        el('span', { class: 'avatar', text: c.emoji }),
+        el('div', {},
+          el('div', { class: 'name', text: c.name }),
+          el('div', { class: 'mood', text: `${FACES[c.mood]} ${WORDS[c.mood]}` },
+            trend ? el('span', { class: 'trend', text: ` · ${trend}` }) : null))),
+      el('div', { class: 'status', text: c.status }),
+    )
+    if (c.items.length > 0) {
+      node.append(el('button', {
+        class: 'link', type: 'button', 'aria-expanded': String(isOpen),
+        text: isOpen ? '▾ Hide details' : `▸ What's wrong? (${c.items.length})`,
+        onclick: () => { isOpen ? open.delete(c.id) : open.add(c.id); render(current, true) },
+      }))
+    }
+    if (isOpen) {
+      const list = el('div', { class: 'items' })
+      for (const item of c.items.slice(0, 8)) {
+        const said = current.words[item.wordKey]
+        list.append(el('div', { class: 'item' },
+          el('div', { class: 'item-text' + (said ? '' : ' pending'), text: said || 'Putting this into plain words…' }),
+          el('div', { class: 'item-title', text: (item.number ? `#${item.number} ` : '') + item.title }),
+          el('div', { class: 'row' },
+            el('button', {
+              class: 'primary', type: 'button', text: 'Fix this',
+              onclick: () => act('fix', item.handle, item.number ? `fix #${item.number}` : 'fix the failing check'),
+            }),
+            item.url ? el('a', { href: item.url, target: '_blank', rel: 'noopener', text: 'Open on GitHub' }) : null)))
+      }
+      if (c.items.length > 8) list.append(el('div', { class: 'empty', text: `…and ${c.items.length - 8} more.` }))
+      node.append(list)
+    }
+    node.append(el('button', {
+      class: 'link', type: 'button', text: c.items.length ? '▸ Ask for a full check-up' : '▸ Get a check-up',
+      onclick: () => act('checkup', c.id, `${c.name} check-up`),
+    }))
+    return node
+  }
+
+  function render(s, force) {
+    if (!s || !s.board) return
+    const b = s.board
+    document.getElementById('meta').textContent =
+      (s.busy ? 'Checking…' : `Updated ${ago(Date.now() - b.updatedAt)}`) + (b.repo ? ` · ${b.repo}` : '')
+    const key = JSON.stringify(s)
+    if (!force && key === last) return
+    last = key
+    current = s
+    const err = document.getElementById('error')
+    err.replaceChildren(...(s.alert ? [el('div', { class: 'error', text: `⚠ ${s.alert}` })] : []),
+      ...(b.error ? [el('div', { class: 'error', text: b.error })] : []))
+    document.getElementById('grid').replaceChildren(...b.cards.map(card))
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('state', { cache: 'no-store' })
+      if (r.ok) render(await r.json())
+    } catch {
+      document.getElementById('meta').textContent = 'Waiting for Claude Code…'
+    }
+  }
+
+  document.getElementById('refresh').addEventListener('click', () => act('refresh', '', ''))
+  poll()
+  setInterval(poll, 3000)
+})()
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import type { Board, CheckRun, Mood, MoodItem, PersonaCard, Trend } from '../types'
 
-import type { PersonaConfig, TeamMoodConfig } from './config'
+import type { MatchRule, PersonaConfig, TeamMoodConfig } from './config'
 
 /** An open issue as `gh issue list --json number,title,labels,author,url,updatedAt` gives it. */
 export type GhIssue = {
@@ -10,16 +10,40 @@ export type GhIssue = {
   updatedAt: string
   labels: { name: string }[]
   author: { login: string }
+  /** Present when a persona's `match` rule reads bodies. */
+  body?: string
+}
+
+const anyLabel = (want: string[], issue: GhIssue) => {
+  const labels = new Set(issue.labels.map(l => l.name.toLowerCase()))
+  return want.some(l => labels.has(l.toLowerCase()))
+}
+const anyAuthor = (want: string[], issue: GhIssue) =>
+  want.some(a => a.toLowerCase() === issue.author.login.toLowerCase())
+const anyPattern = (want: string[], text: string) =>
+  want.some(p => safeRegExp(p)?.test(text) ?? false)
+
+function passes(rule: MatchRule, issue: GhIssue): boolean {
+  if (rule.labels !== undefined && !anyLabel(rule.labels, issue)) return false
+  if (rule.notLabels !== undefined && anyLabel(rule.notLabels, issue)) return false
+  if (rule.authors !== undefined && !anyAuthor(rule.authors, issue)) return false
+  if (rule.titlePatterns !== undefined && !anyPattern(rule.titlePatterns, issue.title)) return false
+  if (rule.bodyPatterns !== undefined && !anyPattern(rule.bodyPatterns, issue.body ?? '')) return false
+
+  return Object.keys(rule).length > 0
 }
 
 export function belongsTo(persona: PersonaConfig, issue: GhIssue): boolean {
-  const labels = new Set(issue.labels.map(l => l.name.toLowerCase()))
-  if ((persona.labels ?? []).some(l => labels.has(l.toLowerCase()))) return true
-  if ((persona.authors ?? []).some(a => a.toLowerCase() === issue.author.login.toLowerCase())) {
-    return true
-  }
+  if (anyLabel(persona.labels ?? [], issue)) return true
+  if (anyAuthor(persona.authors ?? [], issue)) return true
+  if (anyPattern(persona.titlePatterns ?? [], issue.title)) return true
 
-  return (persona.titlePatterns ?? []).some(p => safeRegExp(p)?.test(issue.title) ?? false)
+  return (persona.match ?? []).some(rule => passes(rule, issue))
+}
+
+/** Whether any persona's rules read issue bodies, so `gh` has to fetch them. */
+export function needsBodies(config: TeamMoodConfig): boolean {
+  return config.personas.some(p => (p.match ?? []).some(r => r.bodyPatterns !== undefined))
 }
 
 /** The highest severity label's weight, or the default when the issue carries none. */

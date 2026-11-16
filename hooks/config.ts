@@ -9,6 +9,17 @@ export type CheckConfig = {
   timeoutSeconds?: number
 }
 
+/** One way an issue belongs to a persona: every field given must hold (each by any of its values). */
+export type MatchRule = {
+  labels?: string[]
+  /** Labels the issue must not carry. */
+  notLabels?: string[]
+  titlePatterns?: string[]
+  authors?: string[]
+  /** Regexes (case-insensitive) on the issue's body, e.g. a combined report's finding categories. */
+  bodyPatterns?: string[]
+}
+
 export type PersonaConfig = {
   id: string
   name: string
@@ -23,6 +34,8 @@ export type PersonaConfig = {
   titlePatterns?: string[]
   /** Issue authors that belong to this persona, e.g. "app/sentry". */
   authors?: string[]
+  /** Stricter ways in: an issue that passes any one rule belongs here too. */
+  match?: MatchRule[]
   /** Local checks, run after Claude edits files. */
   checks?: CheckConfig[]
   /** Fallback status lines per mood; {n} is the count in words, {s} the plural "s". */
@@ -33,6 +46,15 @@ export type PersonaConfig = {
 
 export type Thresholds = { worried: number; alarmed: number }
 
+export type DashboardConfig = {
+  /** A local web page of the team, for sessions with no panel (remote mode). */
+  enabled: boolean
+  /** Where it listens. 127.0.0.1 keeps it to this machine; a Tailscale address shares it. */
+  host: string
+  /** Preferred port; another is picked when it is taken. */
+  port: number
+}
+
 export type TeamMoodConfig = {
   refreshMinutes: number
   /** Ask a small model to rewrite findings in plain language. Off: fixed sentences. */
@@ -42,6 +64,7 @@ export type TeamMoodConfig = {
   thresholds: Thresholds
   personas: PersonaConfig[]
   checks: { enabled: boolean; debounceSeconds: number; exclude: string[] }
+  dashboard: DashboardConfig
   protect: {
     paths: string[]
     extraPaths: string[]
@@ -204,6 +227,7 @@ export const DEFAULT_CONFIG: TeamMoodConfig = {
       'package-lock.json',
     ],
   },
+  dashboard: { enabled: true, host: '127.0.0.1', port: 4873 },
   protect: {
     paths: DEFAULT_PROTECTED,
     extraPaths: [],
@@ -228,6 +252,7 @@ export function mergeConfig(raw: unknown): TeamMoodConfig {
   const severity = isObject(raw.severity) ? raw.severity : {}
   const checks = isObject(raw.checks) ? raw.checks : {}
   const protect = isObject(raw.protect) ? raw.protect : {}
+  const dashboard = isObject(raw.dashboard) ? raw.dashboard : {}
 
   return {
     refreshMinutes: num(raw.refreshMinutes, base.refreshMinutes, 1),
@@ -249,6 +274,11 @@ export function mergeConfig(raw: unknown): TeamMoodConfig {
       enabled: bool(checks.enabled, base.checks.enabled),
       debounceSeconds: num(checks.debounceSeconds, base.checks.debounceSeconds, 0),
       exclude: strings(checks.exclude) ?? base.checks.exclude,
+    },
+    dashboard: {
+      enabled: bool(dashboard.enabled, base.dashboard.enabled),
+      host: typeof dashboard.host === 'string' ? dashboard.host : base.dashboard.host,
+      port: num(dashboard.port, base.dashboard.port, 0),
     },
     protect: {
       paths: strings(protect.paths) ?? base.protect.paths,

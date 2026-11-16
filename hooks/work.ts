@@ -22,7 +22,8 @@ import {
 import type { ProtectRules } from './guard'
 import { explainFindings, writeStatusLine } from './plain'
 import type { Excerpt } from './plain'
-import { buildBoard, FACES, signature } from './score'
+import { checkupPrompt, fixPrompt, handleOf } from './prompts'
+import { buildBoard, FACES, needsBodies, signature } from './score'
 import type { GhIssue } from './score'
 
 const board = atom({ plugin: 'team-mood', key: 'board' } as const, null)
@@ -32,6 +33,7 @@ const checks = atom({ plugin: 'team-mood', key: 'checks' } as const, {})
 const baseline = atom({ plugin: 'team-mood', key: 'baseline' } as const, null)
 const lines = atom({ plugin: 'team-mood', key: 'lines' } as const, {})
 const plain = atom({ plugin: 'team-mood', key: 'plain' } as const, {})
+const alert = atom({ plugin: 'team-mood', key: 'alert' } as const, null)
 
 const GH_FIELDS = 'number,title,labels,author,url,updatedAt'
 const STORE_CACHE_LIMIT = 300
@@ -48,6 +50,11 @@ export const S = {
   lastEdit: 0,
   lastChecks: -1,
   isTicking: false,
+  /** The dashboard server, once started or found: where the mod reaches it, and its token. */
+  dash: undefined as { base: string; port: number; token: string } | undefined,
+  isDashStarting: false,
+  isDashReported: false,
+  dashFailures: 0,
 }
 
 export function persona(id: string): PersonaConfig | undefined {
@@ -104,12 +111,14 @@ async function rebuild($: EngineInterface): Promise<void> {
   $.ui.status(next.cards.map(c => `${c.emoji}${FACES[c.mood]}`).join(' '))
   const scores = Object.fromEntries(next.cards.map(c => [c.id, c.score]))
   await $.store.set(`latest:${S.cwd}`, scores)
+  await pushState($)
 }
 
 async function fetchIssues($: EngineInterface): Promise<void> {
   try {
+    const fields = needsBodies(S.config) ? `${GH_FIELDS},body` : GH_FIELDS
     const r = await $.process.run(
-      ['gh', 'issue', 'list', '--state', 'open', '--limit', '300', '--json', GH_FIELDS],
+      ['gh', 'issue', 'list', '--state', 'open', '--limit', '300', '--json', fields],
       { cwd: S.cwd, timeoutMs: 30_000 },
     )
     if (r.exitCode !== 0) {
@@ -140,7 +149,17 @@ async function refresh($: EngineInterface): Promise<void> {
   } finally {
     await update($, busy, () => false)
   }
+  await afterChange($)
+}
+
+/** Plain words for what changed: status lines always, explanations too while the page is up. */
+async function afterChange($: EngineInterface): Promise<void> {
   await phraseLines($)
+  if (S.dash === undefined) return
+  for (const card of (await read($, board))?.cards ?? []) {
+    if (card.items.length > 0) await explain($, card.id)
+  }
+  await pushState($)
 }
 
 /** Asks the model for a status line per persona whose findings changed; cached across sessions. */
@@ -197,6 +216,7 @@ export async function explain($: EngineInterface, id: string): Promise<void> {
   if (Object.keys(found).length === 0) return
   await update($, plain, all => ({ ...all, ...found }))
   await $.store.set('plain', prune({ ...cache, ...found }))
+  await pushState($)
 }
 
 async function excerpt($: EngineInterface, item: MoodItem): Promise<string> {
@@ -228,7 +248,7 @@ async function runChecks($: EngineInterface): Promise<void> {
   } finally {
     await update($, busy, () => false)
   }
-  await phraseLines($)
+  await afterChange($)
 }
 
 /** The heartbeat: re-runs checks once edits settle, and asks GitHub again when due. */
@@ -236,6 +256,9 @@ export async function tick($: EngineInterface): Promise<void> {
   if (S.isTicking) return
   S.isTicking = true
   try {
+    // Starting the page waits on python; the moods must not.
+    if (S.dash === undefined) later($, () => ensureDashboard($))
+    await takeActions($)
     const now = await $.clock.now()
     const isSettled = now - S.lastEdit >= S.config.checks.debounceSeconds * 1000
     if ((S.lastChecks < 0 || S.lastEdit > S.lastChecks) && isSettled) await runChecks($)
@@ -243,6 +266,151 @@ export async function tick($: EngineInterface): Promise<void> {
     if (isDue || (S.wantRefresh && now - S.lastRefresh >= 30_000)) await refresh($)
   } finally {
     S.isTicking = false
+  }
+}
+
+const DASH_START_TRIES = 3
+
+/**
+ * Starts the dashboard server (or finds the one already serving this project), and
+ * tells the remote app about its port so it can show the page in its preview pane.
+ */
+async function ensureDashboard($: EngineInterface): Promise<void> {
+  const { enabled, host, port } = S.config.dashboard
+  if (!enabled || S.dash !== undefined || S.isDashStarting) return
+  if (S.dashFailures >= DASH_START_TRIES) return
+  S.isDashStarting = true
+  try {
+    const home = (await $.env.get('HOME')) ?? '/tmp'
+    const dir = `${home}/.team-mood/${S.cwd.replace(/[^A-Za-z0-9]+/g, '-').slice(-80)}`
+    const info = `${dir}/server.json`
+    const reach = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
+    let found = await readInfo($, info, reach)
+    if (found === undefined) {
+      await $.process.run(['mkdir', '-p', dir])
+      await $.process.run(['rm', '-f', info])
+      // Arguments go in as $0..$3, never into the shell line itself.
+      await $.process.run(
+        [
+          '/bin/sh',
+          '-c',
+          'nohup python3 "$0" --host "$1" --port "$2" --info "$3" >"$3.log" 2>&1 &',
+          `${$.plugin.root}/web/serve.py`,
+          host,
+          String(port),
+          info,
+        ],
+        { timeoutMs: 10_000 },
+      )
+      for (let i = 0; i < 20 && found === undefined; i++) {
+        await $.clock.sleep(250)
+        found = await readInfo($, info, reach)
+      }
+    }
+    if (found === undefined) {
+      S.dashFailures += 1
+      $.ui.log('team-mood: the dashboard page did not start (is python3 installed?)', {
+        to: 'debug',
+      })
+      return
+    }
+    S.dash = found
+    await pushState($)
+    if (!S.isDashReported) {
+      S.isDashReported = true
+      // Remote sessions: the app can show the page beside the chat. Elsewhere the tool is absent.
+      await $.tool
+        .call({ tool: 'mcp__claude-code-remote__report_preview_port', port: found.port, name: 'Team Mood' })
+        .catch(() => undefined)
+    }
+  } finally {
+    S.isDashStarting = false
+  }
+}
+
+async function readInfo(
+  $: EngineInterface,
+  path: string,
+  reach: string,
+): Promise<typeof S.dash> {
+  try {
+    const info = JSON.parse(await $.fs.read(path)) as { port?: unknown; token?: unknown }
+    if (typeof info.port !== 'number' || typeof info.token !== 'string') return undefined
+    const base = `http://${reach}:${info.port}`
+    const r = await $.http.fetch(`${base}/state`)
+
+    return r.ok ? { base, port: info.port, token: info.token } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The page's URL on this machine, while the dashboard runs. */
+export function dashboardUrl(): string | undefined {
+  return S.dash === undefined ? undefined : `http://127.0.0.1:${S.dash.port}`
+}
+
+/** What the page draws: the board, each finding's handle and plain words, and the guard's alert. */
+export async function pushState($: EngineInterface): Promise<void> {
+  const dash = S.dash
+  if (dash === undefined) return
+  const b = await read($, board)
+  if (b === null) return
+  const words = await read($, plain)
+  const cards = b.cards.map(c => ({
+    ...c,
+    items: c.items.map(i => ({ ...i, handle: handleOf(i), wordKey: plainKey(i), output: undefined })),
+  }))
+  const body = JSON.stringify({
+    board: { ...b, cards },
+    words,
+    busy: await read($, busy),
+    alert: await read($, alert),
+  })
+  try {
+    const r = await $.http.fetch(`${dash.base}/state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Team-Mood-Token': dash.token },
+      body,
+    })
+    if (!r.ok) S.dash = undefined
+  } catch {
+    S.dash = undefined
+  }
+}
+
+/** Presses made on the page since the last heartbeat, sent to Claude as the panel's buttons are. */
+async function takeActions($: EngineInterface): Promise<void> {
+  const dash = S.dash
+  if (dash === undefined) return
+  let actions: { kind: string; target: string }[] = []
+  try {
+    const r = await $.http.fetch(`${dash.base}/actions`, {
+      headers: { 'X-Team-Mood-Token': dash.token },
+    })
+    if (!r.ok) throw new Error(String(r.status))
+    actions = JSON.parse(r.text) as typeof actions
+  } catch {
+    S.dash = undefined // gone: the next heartbeat starts or finds it again
+    return
+  }
+  const cards = (await read($, board))?.cards ?? []
+  for (const { kind, target } of actions) {
+    if (kind === 'refresh') {
+      wantEverything()
+      continue
+    }
+    if (kind === 'checkup') {
+      const p = persona(target)
+      if (p !== undefined) later($, () => $.prompt.submit({ text: checkupPrompt(p), asUser: true }))
+      continue
+    }
+    const hit = cards.flatMap(c => c.items.map(item => ({ c, item }))).find(x => handleOf(x.item) === target)
+    const p = hit ? persona(hit.c.id) : undefined
+    if (hit !== undefined && p !== undefined) {
+      const text = fixPrompt(p, hit.item)
+      later($, () => $.prompt.submit({ text, asUser: true }))
+    }
   }
 }
 

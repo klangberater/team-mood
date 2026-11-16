@@ -31,6 +31,9 @@ things improved since you last opened Claude.
 All happy? Press **Get a check-up** to have Claude look over the whole app from that persona's
 point of view. It tells you what it finds and asks before changing anything.
 
+Using Claude in remote mode (from the desktop app or your phone)? The team shows up as a page in
+the app's preview pane instead, with the same buttons.
+
 If you don't see the panel, type `/team-mood` and press Enter. Your terminal window may need to
 be wider. If the team still answers as text, the panel can't be shown where you are; the text
 lists the same problems, and you type the buttons instead: `/team-mood fix 42` to fix problem 42,
