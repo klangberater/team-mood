@@ -35,9 +35,18 @@ const PANE = {
 } as const
 
 /** The engine beneath the plugin: gh answers ISSUES, no config file, no model. */
-type World = { placed?: UiOpenResult; files?: Record<string, string>; env?: Record<string, string> }
+type World = {
+  placed?: UiOpenResult
+  files?: Record<string, string>
+  env?: Record<string, string>
+  ran?: (readonly string[])[]
+}
 
-function world(on: On, submitted: string[], { placed = { isPlaced: true }, files = {}, env = {} }: World = {}) {
+function world(
+  on: On,
+  submitted: string[],
+  { placed = { isPlaced: true }, files = {}, env = {}, ran = [] }: World = {},
+) {
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on, { 'latest:/repo': { security: 0, qa: 2, performance: 0 } })
   on('command.register', () => ({ value: { command: 'team-mood' } }))
@@ -61,6 +70,7 @@ function world(on: On, submitted: string[], { placed = { isPlaced: true }, files
     },
   }))
   on('process.run', (_, e) => {
+    ran.push(e.argv)
     const [cmd, sub] = e.argv
     const ok = (stdout: string, exitCode = 0) => ({
       value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -68,6 +78,10 @@ function world(on: On, submitted: string[], { placed = { isPlaced: true }, files
     if (cmd === 'gh' && sub === 'issue') return ok(JSON.stringify(ISSUES))
     if (cmd === 'gh' && sub === 'repo') return ok('o/r\n')
     if (cmd === 'git') return ok('', 1) // secret scan: nothing found
+    if (cmd === 'tailscale') {
+      return ok(JSON.stringify({ Self: { TailscaleIPs: ['100.64.0.7', 'fd7a::7'], DNSName: 'mac.tail.ts.net.' } }))
+    }
+    if (cmd === 'mkdir' || cmd === 'rm' || cmd === '/bin/sh') return ok('')
 
     return ok('', 127)
   })
@@ -208,4 +222,30 @@ test('the page: the mod starts it, posts the team to it, and sends its presses t
   expect(reported).toContainEqual(
     expect.objectContaining({ tool: 'mcp__claude-code-remote__report_preview_port', port: 4873 }),
   )
+})
+
+test('shared on Tailscale, the page listens there too and is given by its Tailscale name', { options: { dashboardHost: 'tailscale' } }, async ($, on) => {
+  const ran: (readonly string[])[] = []
+  const info = '/home/me/.team-mood/-repo/server.json'
+  const files: Record<string, string> = {}
+  const clock = world(on, [], {
+    placed: { isPlaced: false, reason: 'no-surface' },
+    env: { HOME: '/home/me' },
+    files,
+    ran,
+  })
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '[]' } }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  await clock.advance(100)
+  // The server "starts": it writes its info file, as serve.py does.
+  files[info] = JSON.stringify({ port: 4873, token: 't', pid: 1, hosts: ['127.0.0.1', '100.64.0.7'] })
+  await clock.advance(6000)
+
+  const start = ran.find(argv => argv[0] === '/bin/sh') ?? []
+  expect(start).toContain('100.64.0.7')
+  expect(start.filter(a => a === '--host')).toHaveLength(2)
+  const text = (await $.command.run({ command: 'team-mood', args: '', ...RUN })).text
+  expect(text).toContain('http://mac.tail.ts.net:4873')
 })

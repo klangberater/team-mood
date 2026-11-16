@@ -51,7 +51,9 @@ export const S = {
   lastChecks: -1,
   isTicking: false,
   /** The dashboard server, once started or found: where the mod reaches it, and its token. */
-  dash: undefined as { base: string; port: number; token: string } | undefined,
+  dash: undefined as { base: string; port: number; token: string; url: string } | undefined,
+  /** The person's choice (userConfig `dashboardHost`): the page on Tailscale too. */
+  isSharedOnTailscale: false,
   isDashStarting: false,
   isDashReported: false,
   dashFailures: 0,
@@ -271,12 +273,15 @@ export async function tick($: EngineInterface): Promise<void> {
 
 const DASH_START_TRIES = 3
 
+type DashInfo = { port: number; token: string; pid: number; hosts: string[] }
+
 /**
  * Starts the dashboard server (or finds the one already serving this project), and
  * tells the remote app about its port so it can show the page in its preview pane.
+ * It listens on this machine, and on its Tailscale address when the person chose that.
  */
 async function ensureDashboard($: EngineInterface): Promise<void> {
-  const { enabled, host, port } = S.config.dashboard
+  const { enabled, port } = S.config.dashboard
   if (!enabled || S.dash !== undefined || S.isDashStarting) return
   if (S.dashFailures >= DASH_START_TRIES) return
   S.isDashStarting = true
@@ -284,27 +289,36 @@ async function ensureDashboard($: EngineInterface): Promise<void> {
     const home = (await $.env.get('HOME')) ?? '/tmp'
     const dir = `${home}/.team-mood/${S.cwd.replace(/[^A-Za-z0-9]+/g, '-').slice(-80)}`
     const info = `${dir}/server.json`
-    const reach = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
-    let found = await readInfo($, info, reach)
+    const tail = S.isSharedOnTailscale ? await tailscale($) : undefined
+    const hosts = tail ? ['127.0.0.1', tail.ip] : ['127.0.0.1']
+
+    let found = await readInfo($, info)
+    if (found !== undefined && found.hosts.join(',') !== hosts.join(',')) {
+      await $.process.run(['kill', String(found.pid)]).catch(() => undefined)
+      found = undefined
+    }
     if (found === undefined) {
       await $.process.run(['mkdir', '-p', dir])
       await $.process.run(['rm', '-f', info])
-      // Arguments go in as $0..$3, never into the shell line itself.
+      // Arguments go in as "$0" and "$@", never into the shell line itself.
       await $.process.run(
         [
           '/bin/sh',
           '-c',
-          'nohup python3 "$0" --host "$1" --port "$2" --info "$3" >"$3.log" 2>&1 &',
+          'log="$1"; shift; nohup python3 "$0" "$@" >"$log" 2>&1 &',
           `${$.plugin.root}/web/serve.py`,
-          host,
+          `${info}.log`,
+          ...hosts.flatMap(h => ['--host', h]),
+          '--port',
           String(port),
+          '--info',
           info,
         ],
         { timeoutMs: 10_000 },
       )
       for (let i = 0; i < 20 && found === undefined; i++) {
         await $.clock.sleep(250)
-        found = await readInfo($, info, reach)
+        found = await readInfo($, info)
       }
     }
     if (found === undefined) {
@@ -314,7 +328,13 @@ async function ensureDashboard($: EngineInterface): Promise<void> {
       })
       return
     }
-    S.dash = found
+    const where = tail?.name ?? '127.0.0.1'
+    S.dash = {
+      base: `http://127.0.0.1:${found.port}`,
+      port: found.port,
+      token: found.token,
+      url: `http://${where}:${found.port}`,
+    }
     await pushState($)
     if (!S.isDashReported) {
       S.isDashReported = true
@@ -328,26 +348,48 @@ async function ensureDashboard($: EngineInterface): Promise<void> {
   }
 }
 
-async function readInfo(
-  $: EngineInterface,
-  path: string,
-  reach: string,
-): Promise<typeof S.dash> {
-  try {
-    const info = JSON.parse(await $.fs.read(path)) as { port?: unknown; token?: unknown }
-    if (typeof info.port !== 'number' || typeof info.token !== 'string') return undefined
-    const base = `http://${reach}:${info.port}`
-    const r = await $.http.fetch(`${base}/state`)
+/** This machine's Tailscale IPv4 address and name, when Tailscale is installed and up. */
+async function tailscale($: EngineInterface): Promise<{ ip: string; name: string } | undefined> {
+  for (const bin of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
+    try {
+      const r = await $.process.run([bin, 'status', '--json'], { timeoutMs: 5_000 })
+      if (r.exitCode !== 0) continue
+      const self = (JSON.parse(r.stdout) as { Self?: { TailscaleIPs?: string[]; DNSName?: string } }).Self
+      const ip = self?.TailscaleIPs?.find(a => a.includes('.'))
+      if (ip !== undefined) return { ip, name: (self?.DNSName ?? '').replace(/\.$/, '') || ip }
+    } catch {
+      // not installed under this name; try the next
+    }
+  }
+  $.ui.log('team-mood: Tailscale is not running, so the page is on this computer only', {
+    to: 'debug',
+  })
 
-    return r.ok ? { base, port: info.port, token: info.token } : undefined
+  return undefined
+}
+
+/** The running server this project's info file names, if it answers. */
+async function readInfo($: EngineInterface, path: string): Promise<DashInfo | undefined> {
+  try {
+    const info = JSON.parse(await $.fs.read(path)) as Partial<DashInfo>
+    if (typeof info.port !== 'number' || typeof info.token !== 'string') return undefined
+    const r = await $.http.fetch(`http://127.0.0.1:${info.port}/state`)
+    if (!r.ok) return undefined
+
+    return {
+      port: info.port,
+      token: info.token,
+      pid: typeof info.pid === 'number' ? info.pid : 0,
+      hosts: Array.isArray(info.hosts) ? info.hosts.map(String) : ['127.0.0.1'],
+    }
   } catch {
     return undefined
   }
 }
 
-/** The page's URL on this machine, while the dashboard runs. */
+/** The page's address for the person: the Tailscale name when shared there, else this machine. */
 export function dashboardUrl(): string | undefined {
-  return S.dash === undefined ? undefined : `http://127.0.0.1:${S.dash.port}`
+  return S.dash?.url
 }
 
 /** What the page draws: the board, each finding's handle and plain words, and the guard's alert. */

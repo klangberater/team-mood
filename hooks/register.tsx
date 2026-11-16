@@ -67,7 +67,9 @@ function ago(ms: number): string {
   return `${Math.floor(min / 60)} h ago`
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  S.isSharedOnTailscale = options.dashboardHost === 'tailscale'
+
   on('session.start', async ($, e, next) => {
     S.cwd = e.cwd
     await loadConfig($)
@@ -122,7 +124,10 @@ export const register: Register = on => {
     const opened = await $.ui.open({ id: PANE, title: TITLE, rows: ROWS, focus: true })
     wantEverything()
     later($, () => tick($))
-    if (opened.isPlaced) return { text: 'Team Mood is open.' }
+    const url = dashboardUrl()
+    if (opened.isPlaced) {
+      return { text: url ? `Team Mood is open. Live page: ${url}` : 'Team Mood is open.' }
+    }
     if (cards.length === 0) return { text: 'Still asking the team; run /team-mood again in a moment.' }
 
     // No panel here: the moods as text, each finding in plain words with its fix command.
@@ -143,7 +148,6 @@ export const register: Register = on => {
       )
     })
 
-    const url = dashboardUrl()
     const page = url
       ? `The live page, with buttons: ${url} (in remote mode, also in the app's preview pane).`
       : `(The panel can't be shown here: ${opened.reason}. These commands do what its buttons do.)`

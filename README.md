@@ -45,11 +45,17 @@ updates every few seconds and its **Fix this**, **Get a check-up** and **Refresh
 a press reaches the session within seconds and is sent to Claude as the panel's would be.
 
 The page needs `python3` (macOS and Linux have it). Its server is a short standard-library
-script (`web/serve.py`) that stops by itself two minutes after the session ends. It listens on
-this machine only. Pressing buttons needs a token that only the page itself carries, so other
-websites can't press them. To open it from other devices, set `"dashboard": { "host": "0.0.0.0" }`
-(or your Tailscale address), but only on a network you trust: anyone who can load the page can
-press its buttons. `"dashboard": { "enabled": false }` turns it off.
+script (`web/serve.py`) that stops by itself two minutes after the session ends. Pressing buttons
+needs a token that only the page itself carries, so other websites can't press them.
+
+By default the page is on this computer only (`http://127.0.0.1:4873`). To open it from your
+phone or another computer, use **Tailscale**: in `/config`, set Team Mood's **Live page reachable
+from** to `tailscale` (or in `~/.claude/settings.json`:
+`"pluginConfigs": { "team-mood": { "options": { "dashboardHost": "tailscale" } } }`). The page
+then also listens on the machine's Tailscale address, and `/team-mood` gives it by its Tailscale
+name, e.g. `http://my-mac.tailnet-name.ts.net:4873`. Anyone on your tailnet can press its
+buttons. A project turns the page off with `"dashboard": { "enabled": false }` in
+`.team-mood.json`, and picks another port with `"dashboard": { "port": 4874 }`.
 
 Where neither a panel nor the page is at hand, `/team-mood` answers in text instead: each persona's mood and findings in plain
 words, with typed commands for the buttons:

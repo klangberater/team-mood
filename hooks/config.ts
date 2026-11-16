@@ -49,9 +49,7 @@ export type Thresholds = { worried: number; alarmed: number }
 export type DashboardConfig = {
   /** A local web page of the team, for sessions with no panel (remote mode). */
   enabled: boolean
-  /** Where it listens. 127.0.0.1 keeps it to this machine; a Tailscale address shares it. */
-  host: string
-  /** Preferred port; another is picked when it is taken. */
+  /** Preferred port; another is picked when it is taken. Who can reach it is a per-machine setting. */
   port: number
 }
 
@@ -227,7 +225,7 @@ export const DEFAULT_CONFIG: TeamMoodConfig = {
       'package-lock.json',
     ],
   },
-  dashboard: { enabled: true, host: '127.0.0.1', port: 4873 },
+  dashboard: { enabled: true, port: 4873 },
   protect: {
     paths: DEFAULT_PROTECTED,
     extraPaths: [],
@@ -277,7 +275,6 @@ export function mergeConfig(raw: unknown): TeamMoodConfig {
     },
     dashboard: {
       enabled: bool(dashboard.enabled, base.dashboard.enabled),
-      host: typeof dashboard.host === 'string' ? dashboard.host : base.dashboard.host,
       port: num(dashboard.port, base.dashboard.port, 0),
     },
     protect: {

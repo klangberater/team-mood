@@ -27,7 +27,7 @@ MAX_BODY = 4 * 1024 * 1024
 MAX_PENDING = 20
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--host", default="127.0.0.1")
+parser.add_argument("--host", action="append", help="an address to listen on; repeatable")
 parser.add_argument("--port", type=int, default=4873)
 parser.add_argument("--info", required=True, help="where to write {port, pid, token}")
 parser.add_argument("--idle", type=int, default=120)
@@ -115,16 +115,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404)
 
 
-def bind():
+def bind(hosts):
+    """One server per address, all on the same port: the preferred one, else one the first picks."""
     try:
-        return ThreadingHTTPServer((args.host, args.port), Handler)
+        first = ThreadingHTTPServer((hosts[0], args.port), Handler)
     except OSError:
-        return ThreadingHTTPServer((args.host, 0), Handler)
+        first = ThreadingHTTPServer((hosts[0], 0), Handler)
+    port = first.server_address[1]
+    return [first] + [ThreadingHTTPServer((host, port), Handler) for host in hosts[1:]]
 
 
 def main():
-    server = bind()
-    info = {"port": server.server_address[1], "pid": os.getpid(), "token": MOD_TOKEN}
+    hosts = args.host or ["127.0.0.1"]
+    servers = bind(hosts)
+    info = {
+        "port": servers[0].server_address[1],
+        "pid": os.getpid(),
+        "token": MOD_TOKEN,
+        "hosts": hosts,
+    }
     fd = os.open(args.info, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(info, f)
@@ -132,10 +141,13 @@ def main():
     def watchdog():
         while time.time() - last_seen < args.idle:
             time.sleep(5)
-        server.shutdown()
+        for server in servers:
+            server.shutdown()
 
+    for server in servers[1:]:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
-    server.serve_forever()
+    servers[0].serve_forever()
     try:
         os.remove(args.info)
     except OSError:

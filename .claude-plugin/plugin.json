@@ -2,8 +2,22 @@
   "name": "team-mood",
   "version": "0.1.0",
   "description": "A panel of personas (Security, QA, Performance) whose moods show how healthy your app is, in plain language.",
-  "author": { "name": "klangberater" },
+  "author": {
+    "name": "klangberater"
+  },
   "homepage": "https://github.com/klangberater/team-mood",
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "dashboardHost": {
+      "type": "string",
+      "title": "Live page reachable from",
+      "description": "Where the Team Mood page can be opened: only this computer, or also your other devices on your Tailscale network (anyone on it can press the page's buttons).",
+      "options": [
+        "this-computer",
+        "tailscale"
+      ],
+      "default": "this-computer"
+    }
+  }
 }
