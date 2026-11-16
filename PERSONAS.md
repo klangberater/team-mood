@@ -32,7 +32,9 @@ All happy? Press **Get a check-up** to have Claude look over the whole app from 
 point of view. It tells you what it finds and asks before changing anything.
 
 If you don't see the panel, type `/team-mood` and press Enter. Your terminal window may need to
-be wider.
+be wider. If the team still answers as text, the panel can't be shown where you are; the text
+lists the same problems, and you type the buttons instead: `/team-mood fix 42` to fix problem 42,
+`/team-mood checkup security` for a check-up.
 
 ## The one rule: no cheating
 

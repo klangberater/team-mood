@@ -139,18 +139,29 @@ test('the guard puts a CI edit to the person, and lets ordinary edits through', 
   expect(fine.decision).toBe('allow')
 })
 
-test('where no panel can be placed, /team-mood says why and gives the moods as text', async ($, on) => {
-  const clock = world(on, [], { isPlaced: false, reason: 'no-surface: nothing is attached' })
+const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as const
+
+test('where no panel can be placed, /team-mood answers in text with typed actions', async ($, on) => {
+  const submitted: string[] = []
+  const clock = world(on, submitted, { isPlaced: false, reason: 'no-surface: nothing is attached' })
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
   await clock.advance(1000)
 
-  const ran = await $.command.run({
-    command: 'team-mood',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 80 },
-  })
-  expect(ran.text).toContain("can't be shown here (no-surface: nothing is attached)")
-  expect(ran.text).toContain('🛡️ Security Engineer: 😐 Okay')
-  expect(ran.text).toContain('#42 Security: login page reveals which emails have accounts')
+  const list = await $.command.run({ command: 'team-mood', args: '', ...RUN })
+  expect(list.text).toContain('🛡️ Security Engineer: 😐 Okay')
+  expect(list.text).toContain('Security: login page reveals which emails have accounts')
+  expect(list.text).toContain('/team-mood fix 42')
+  expect(list.text).toContain('/team-mood checkup performance')
+  expect(list.text).toContain("can't be shown here: no-surface: nothing is attached")
+
+  const fix = await $.command.run({ command: 'team-mood', args: 'fix #42', ...RUN })
+  expect(fix.text).toBe('Asked Claude to fix issue #42 for the Security Engineer.')
+  const checkup = await $.command.run({ command: 'team-mood', args: 'checkup qa', ...RUN })
+  expect(checkup.text).toBe('Asked Claude for a QA Lead check-up.')
+  await clock.advance(10)
+  expect(submitted[0]).toContain('The Security Engineer is unhappy about issue #42')
+  expect(submitted[1]).toContain('Act as the QA Lead')
+
+  const unknown = await $.command.run({ command: 'team-mood', args: 'fix 999', ...RUN })
+  expect(unknown.text).toContain('Nothing on the team')
 })

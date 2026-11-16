@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Mood, PersonaCard, Trend } from '../types'
+import type { Mood, MoodItem, PersonaCard, Trend } from '../types'
 
 import { checkupPrompt, fixPrompt } from './prompts'
 import { FACES } from './score'
@@ -51,6 +51,23 @@ const TREND: Record<Trend, string> = {
   new: '',
 }
 
+const HELP = 'Try /team-mood to see the list, /team-mood fix <issue>, or /team-mood checkup <persona>.'
+
+/** What `/team-mood fix` takes for an item: the issue number, or the check's name as a slug. */
+function handleOf(item: MoodItem): string {
+  if (item.number !== undefined) return String(item.number)
+
+  return item.title
+    .replace(/^Local check failing: /, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function label(item: MoodItem): string {
+  return item.number !== undefined ? `issue #${item.number}` : `"${item.title}"`
+}
+
 function ago(ms: number): string {
   const min = Math.floor(ms / 60_000)
   if (min < 1) return 'just now'
@@ -67,6 +84,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'team-mood',
       description: 'Show how the Security, QA and Performance personas feel about this app',
+      argumentHint: '[fix <issue> | checkup <persona>]',
     })
     wantEverything()
     $.clock.every(5_000, () => later($, () => tick($)))
@@ -76,28 +94,68 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'team-mood' }, async $ => {
+  // `/team-mood` opens the panel; where none can show (remote mode, headless) it answers in text.
+  // `/team-mood fix <issue>` and `/team-mood checkup <persona>` are the panel's buttons, typed.
+  on('command.run', { command: 'team-mood' }, async ($, e) => {
+    const [verb = '', ...rest] = e.args.trim().split(/\s+/)
+    const target = rest.join(' ').replace(/^#/, '').toLowerCase()
+    const b = await read($, board)
+    const cards = b?.cards ?? []
+
+    if (verb.toLowerCase() === 'fix') {
+      const hit = cards
+        .flatMap(c => c.items.map(item => ({ c, item })))
+        .find(({ item }) => handleOf(item) === target)
+      const p = hit ? persona(hit.c.id) : undefined
+      if (hit === undefined || p === undefined) {
+        return { text: `Nothing on the team's list is called "${target}". ${HELP}` }
+      }
+      later($, () => $.prompt.submit({ text: fixPrompt(p, hit.item), asUser: true }))
+
+      return { text: `Asked Claude to fix ${label(hit.item)} for the ${p.name}.` }
+    }
+
+    if (verb.toLowerCase() === 'checkup') {
+      const p = S.config.personas.find(
+        one => one.id.toLowerCase() === target || one.name.toLowerCase().includes(target),
+      )
+      if (target === '' || p === undefined) {
+        const ids = S.config.personas.map(one => one.id).join(', ')
+        return { text: `Which persona? One of: ${ids}. ${HELP}` }
+      }
+      later($, () => $.prompt.submit({ text: checkupPrompt(p), asUser: true }))
+
+      return { text: `Asked Claude for a ${p.name} check-up.` }
+    }
+
     const opened = await $.ui.open({ id: PANE, title: TITLE, rows: ROWS, focus: true })
     wantEverything()
     later($, () => tick($))
     if (opened.isPlaced) return { text: 'Team Mood is open.' }
+    if (cards.length === 0) return { text: 'Still asking the team; run /team-mood again in a moment.' }
 
-    // No panel here: say why, and give the moods as text so they are seen anyway.
-    const b = await read($, board)
-    const cards = (b?.cards ?? []).map(c => {
+    // No panel here: the moods as text, each finding in plain words with its fix command.
+    for (const c of cards) if (c.items.length > 0) await explain($, c.id)
+    const words = await read($, plain)
+    const blocks = cards.map(c => {
       const trend = TREND[c.trend] ? ` (${TREND[c.trend]})` : ''
-      const items = c.items
-        .slice(0, 5)
-        .map(i => `\n    - ${i.number !== undefined ? `#${i.number} ` : ''}${i.title}`)
-        .join('')
+      const items = c.items.slice(0, 5).map(item => {
+        const said = words[plainKey(item)] ?? item.title
+        return `\n  • ${said}\n    → /team-mood fix ${handleOf(item)}`
+      })
+      const more = c.items.length > 5 ? `\n  …and ${c.items.length - 5} more.` : ''
+      const checkup = c.items.length === 0 ? `\n  → /team-mood checkup ${c.id}` : ''
 
-      return `${c.emoji} ${c.name}: ${FACES[c.mood]} ${MOOD_WORD[c.mood]}${trend}\n  ${c.status}${items}`
+      return (
+        `${c.emoji} ${c.name}: ${FACES[c.mood]} ${MOOD_WORD[c.mood]}${trend}\n` +
+        `  “${c.status}”${items.join('')}${more}${checkup}`
+      )
     })
 
     return {
       text:
-        `The Team Mood panel can't be shown here (${opened.reason}).\n\n` +
-        (cards.length > 0 ? cards.join('\n\n') : 'Still asking the team; run /team-mood again in a moment.'),
+        `${blocks.join('\n\n')}\n\n` +
+        `(The panel can't be shown here: ${opened.reason}. These commands do what its buttons do.)`,
     }
   })
 

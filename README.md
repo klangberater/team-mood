@@ -35,6 +35,14 @@ In the desktop app: click **+** next to the prompt box → **Plugins** → **Add
 The panel opens by itself in a wide terminal (144+ columns) or the desktop app. Anywhere else,
 type `/team-mood`. A short mood summary also sits in the status line.
 
+Where no panel can be drawn at all (a remote session viewed from the desktop app or phone, or a
+headless run), `/team-mood` answers in text instead: each persona's mood and findings in plain
+words, with typed commands for the buttons:
+
+- `/team-mood fix 42` (an issue number, or a check's name like `secret-scan`) does what
+  **Fix this** does;
+- `/team-mood checkup security` does what **Get a check-up** does.
+
 ## How moods are worked out
 
 1. **GitHub issues.** Every open issue is matched to personas by **label**, **title pattern** or
